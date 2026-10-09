@@ -29,10 +29,9 @@ typedef struct Client {
 static Client *clients = NULL;
 static pthread_mutex_t clients_lock =
     PTHREAD_MUTEX_INITIALIZER;
-
 static int connected_count = 0;
 
-/* Send all requested bytes over TCP. */
+/* Send all bytes even when send() is partial. */
 static int send_all(int fd, const char *data, size_t length)
 {
     size_t sent = 0;
@@ -53,12 +52,11 @@ static int send_all(int fd, const char *data, size_t length)
     return 0;
 }
 
-/* Caller must hold clients_lock. */
+/* Caller must hold the clients mutex. */
 static void send_locked(Client *client, const char *message)
 {
-    if (send_all(client->fd, message,
-                 strlen(message)) < 0) {
-        /* Client cleanup is handled by its thread. */
+    if (send_all(client->fd, message, strlen(message)) < 0) {
+        /* The client thread handles cleanup later. */
     }
 }
 
@@ -69,17 +67,7 @@ static void reply(Client *client, const char *message)
     pthread_mutex_unlock(&clients_lock);
 }
 
-/*
- * Read one newline-terminated command.
- *
- * Handles partial TCP data and multiple commands
- * arriving within the same TCP stream.
- *
- *  1 = Complete line
- *  0 = Disconnected
- * -1 = Socket error
- * -2 = Line too long
- */
+/* Read one complete newline-terminated command. */
 static int read_line(int fd, char *buffer, size_t capacity)
 {
     size_t length = 0;
@@ -118,7 +106,6 @@ static int read_line(int fd, char *buffer, size_t capacity)
     }
 }
 
-/* Validate a username. */
 static int valid_username(const char *name)
 {
     size_t length = strlen(name);
@@ -136,7 +123,7 @@ static int valid_username(const char *name)
     return 1;
 }
 
-/* Caller must hold clients_lock. */
+/* Must be called while holding clients_lock. */
 static int username_taken(const char *name)
 {
     for (Client *p = clients; p != NULL; p = p->next) {
@@ -148,7 +135,19 @@ static int username_taken(const char *name)
     return 0;
 }
 
-/* Notify other registered clients about presence. */
+/* Find a registered user. Mutex must be held. */
+static Client *find_user(const char *username)
+{
+    for (Client *p = clients; p != NULL; p = p->next) {
+        if (p->registered &&
+            strcmp(p->username, username) == 0)
+            return p;
+    }
+
+    return NULL;
+}
+
+/* Send presence events to other registered clients. */
 static void notify_others(Client *sender, const char *event)
 {
     char message[128];
@@ -162,7 +161,7 @@ static void notify_others(Client *sender, const char *event)
     }
 }
 
-/* Handle REGISTER. */
+/* Register a unique username. */
 static void register_user(Client *client, const char *name)
 {
     if (!valid_username(name)) {
@@ -195,7 +194,7 @@ static void register_user(Client *client, const char *name)
     pthread_mutex_unlock(&clients_lock);
 }
 
-/* Handle LIST. */
+/* List all registered users. */
 static void list_users(Client *client)
 {
     char response[MAX_LINE];
@@ -221,7 +220,6 @@ static void list_users(Client *client)
 
         memcpy(response + used, p->username, length);
         used += length;
-
         first = 0;
     }
 
@@ -229,19 +227,10 @@ static void list_users(Client *client)
              " " NODE_ID "\n");
 
     send_locked(client, response);
-
     pthread_mutex_unlock(&clients_lock);
 }
 
-/*
- * Handle BCAST.
- *
- * Sender receives:
- * OK SENT NID:7635
- *
- * Other registered clients receive:
- * MSG BCAST <sender> <message>
- */
+/* Send a message to all other registered users. */
 static void broadcast_message(Client *sender, const char *text)
 {
     if (text[0] == '\0') {
@@ -259,9 +248,8 @@ static void broadcast_message(Client *sender, const char *text)
     pthread_mutex_lock(&clients_lock);
 
     for (Client *p = clients; p != NULL; p = p->next) {
-        if (p->registered && p != sender) {
+        if (p->registered && p != sender)
             send_locked(p, forwarded);
-        }
     }
 
     send_locked(sender, "OK SENT " NODE_ID "\n");
@@ -273,10 +261,65 @@ static void broadcast_message(Client *sender, const char *text)
     pthread_mutex_unlock(&clients_lock);
 }
 
-/* Process a command. Return 0 to close the client. */
+/*
+ * Send a private message to exactly one registered user.
+ *
+ * Sender response: OK SENT NID:7635
+ * Target receives: MSG PRIV <sender> <message>
+ */
+static void private_message(Client *sender, const char *args)
+{
+    const char *space = strchr(args, ' ');
+
+    if (space == NULL || space == args ||
+        space[1] == '\0') {
+        reply(sender,
+              "ERR 005 INVALID_PMSG " NODE_ID "\n");
+        return;
+    }
+
+    size_t username_length = (size_t)(space - args);
+
+    if (username_length > MAX_USERNAME) {
+        reply(sender,
+              "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
+        return;
+    }
+
+    char target_name[MAX_USERNAME + 1];
+    memcpy(target_name, args, username_length);
+    target_name[username_length] = '\0';
+
+    const char *message_text = space + 1;
+
+    pthread_mutex_lock(&clients_lock);
+
+    Client *target = find_user(target_name);
+
+    if (target == NULL) {
+        send_locked(sender,
+                    "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
+    } else {
+        char forwarded[MAX_LINE + MAX_USERNAME + 32];
+
+        snprintf(forwarded, sizeof(forwarded),
+                 "MSG PRIV %s %s\n",
+                 sender->username, message_text);
+
+        send_locked(target, forwarded);
+        send_locked(sender, "OK SENT " NODE_ID "\n");
+
+        printf("[PMSG] %s -> %s\n",
+               sender->username, target_name);
+        fflush(stdout);
+    }
+
+    pthread_mutex_unlock(&clients_lock);
+}
+
+/* Process text commands. Return 0 to disconnect. */
 static int process_command(Client *client, const char *line)
 {
-    /* REGISTER must be the first command. */
     if (!client->registered) {
         if (strncmp(line, "REGISTER ", 9) == 0) {
             register_user(client, line + 9);
@@ -302,6 +345,13 @@ static int process_command(Client *client, const char *line)
         reply(client,
               "ERR 005 EMPTY_MESSAGE " NODE_ID "\n");
     }
+    else if (strncmp(line, "PMSG ", 5) == 0) {
+        private_message(client, line + 5);
+    }
+    else if (strcmp(line, "PMSG") == 0) {
+        reply(client,
+              "ERR 005 INVALID_PMSG " NODE_ID "\n");
+    }
     else if (strncmp(line, "REGISTER", 8) == 0) {
         reply(client,
               "ERR 005 ALREADY_REGISTERED " NODE_ID "\n");
@@ -314,7 +364,7 @@ static int process_command(Client *client, const char *line)
     return 1;
 }
 
-/* Thread function for each connected client. */
+/* Separate execution thread for each client. */
 static void *handle_client(void *arg)
 {
     Client *client = (Client *)arg;
@@ -350,7 +400,6 @@ static void *handle_client(void *arg)
         printf("[LEFT] %s\n", client->username);
     }
 
-    /* Remove client from the shared list. */
     Client **current = &clients;
 
     while (*current != NULL) {
@@ -366,14 +415,12 @@ static void *handle_client(void *arg)
 
     printf("[DISCONNECTED] Active clients: %d\n",
            connected_count);
-
     fflush(stdout);
 
     pthread_mutex_unlock(&clients_lock);
 
     close(client->fd);
     free(client);
-
     return NULL;
 }
 
@@ -385,7 +432,6 @@ int main(void)
 
     signal(SIGPIPE, SIG_IGN);
 
-    /* Create TCP socket. */
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
 
     if (server_fd < 0) {
@@ -393,7 +439,6 @@ int main(void)
         return EXIT_FAILURE;
     }
 
-    /* Allow port reuse after restarting the server. */
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
                    &opt, sizeof(opt)) < 0) {
         perror("setsockopt failed");
@@ -401,14 +446,12 @@ int main(void)
         return EXIT_FAILURE;
     }
 
-    /* Configure personalised server address. */
     memset(&server_addr, 0, sizeof(server_addr));
 
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
     server_addr.sin_port = htons(PORT);
 
-    /* Bind server to port 9562. */
     if (bind(server_fd, (struct sockaddr *)&server_addr,
              sizeof(server_addr)) < 0) {
         perror("Bind failed");
@@ -416,7 +459,6 @@ int main(void)
         return EXIT_FAILURE;
     }
 
-    /* Listen for incoming connections. */
     if (listen(server_fd, BACKLOG) < 0) {
         perror("Listen failed");
         close(server_fd);
@@ -429,12 +471,11 @@ int main(void)
     printf("Listening on TCP port: %d\n", PORT);
     printf("Node ID: %s\n", NODE_ID);
     printf("Concurrency Model: POSIX Threads\n");
-    printf("Supported commands: REGISTER, LIST, BCAST, QUIT\n");
+    printf("Commands: REGISTER, LIST, BCAST, PMSG, QUIT\n");
     printf("Waiting for connections...\n");
     printf("====================================\n");
     fflush(stdout);
 
-    /* Accept new clients continuously. */
     while (1) {
         struct sockaddr_in address;
         socklen_t address_len = sizeof(address);
@@ -446,7 +487,6 @@ int main(void)
         if (fd < 0) {
             if (errno != EINTR)
                 perror("Accept failed");
-
             continue;
         }
 
@@ -469,7 +509,6 @@ int main(void)
             send_all(fd, error, strlen(error));
 
             pthread_mutex_unlock(&clients_lock);
-
             close(fd);
             free(client);
             continue;
@@ -486,7 +525,6 @@ int main(void)
         pthread_mutex_unlock(&clients_lock);
 
         pthread_t thread_id;
-
         int result = pthread_create(&thread_id, NULL,
                                     handle_client, client);
 
@@ -509,7 +547,6 @@ int main(void)
             }
 
             connected_count--;
-
             pthread_mutex_unlock(&clients_lock);
 
             close(fd);

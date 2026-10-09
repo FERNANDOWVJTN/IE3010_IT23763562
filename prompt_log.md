@@ -96,3 +96,19 @@
 **Learning Outcome:** I learned how broadcast messaging is implemented using a shared client registry and how the server distinguishes sender responses from messages forwarded to other clients.
 
 **Current Limitation:** Private messaging, chat rooms, file sharing, and server-side logging are not yet implemented.
+
+## Interaction 08 — Private Messaging Implementation
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested complete updated C server code and step-by-step guidance to implement private messaging (PMSG) according to the NetMessenger assignment protocol, while preserving existing registration and broadcast functionality.
+
+**AI Assistance:** ChatGPT provided an updated server implementation containing the find_user() and private_message() functions. It explained how the server identifies the target username, forwards a private message, sends a personalised response to the sender, and handles invalid or unknown usernames. It also suggested tests using three Ncat clients.
+
+**How I Used the Output:** I backed up the existing server source, replaced it with the updated code, and compiled it with GCC using POSIX threads. I tested the PMSG command with three registered clients: amal, nimal, and kasun.
+
+**Testing Result:** Private messages were delivered successfully between amal and nimal without being forwarded to kasun. Unknown usernames returned ERR 002 USER_NOT_FOUND NID:7635, and an incomplete PMSG command returned ERR 005 INVALID_PMSG NID:7635. I also verified that broadcast messaging continued to work and that clients could disconnect using QUIT.
+
+**Learning Outcome:** I learned the difference between broadcast and private messaging, how to search for registered users in a shared client list, and why mutex synchronization is important in a multi-threaded server.
+
+**Current Limitation:** Chat rooms, binary file transfer, server-side logging, and the complete interactive client application are still pending.

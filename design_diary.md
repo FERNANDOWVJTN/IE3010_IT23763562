@@ -71,3 +71,15 @@ I tested the functionality using three connected users: amal, nimal, and kasun. 
 **Testing Result:** Broadcast messaging worked in both directions. Empty messages and unknown commands returned error responses without crashing the server. All clients disconnected successfully, and the active connection count returned to zero.
 
 **Learning Outcome:** I learned how the server forwards messages between multiple TCP clients and why concurrent access to shared connection data must be controlled.
+
+
+### Entry 06 — 09 October 2026
+**Activity:** Private Messaging Implementation
+
+I added the PMSG command to the existing multi-threaded TCP server. The server searches for the requested username and forwards the message only to the matching registered client. The sender receives an OK SENT response containing my personalised NID tag.
+
+**Design Decision:** I reused the shared client list and mutex for private message delivery. This allows the server to locate the recipient while protecting shared connection information.
+
+**Testing Result:** I tested private messaging using amal, nimal, and kasun. Messages sent between amal and nimal were delivered correctly, while kasun did not receive those private messages. An unknown username returned ERR 002 USER_NOT_FOUND, and an incomplete PMSG command returned an error. I also confirmed that broadcast messaging continued to work and that all three clients responded correctly to QUIT.
+
+**Learning Outcome:** I learned how private messaging differs from broadcasting and how to locate a specific connected user safely in a multi-threaded TCP server.
