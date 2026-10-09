@@ -146,3 +146,20 @@
 **Learning Outcome:** I learned how TCP transports raw binary bytes, why file boundaries must be determined from the protocol header, and how file integrity and transfer errors can be tested.
 
 **Current Limitation:** The file is stored on the server but is not automatically downloaded by the recipient. The complete interactive client, personalised Makefile, persistent logging, and final documentation are still pending.
+
+
+## Interaction 11 — Interactive TCP Client Implementation
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested a complete interactive C client implementation and step-by-step instructions to replace manual Ncat testing. Also requested guidance after an unexpected CentOS virtual machine shutdown.
+
+**AI Assistance:** ChatGPT provided an updated C client source file supporting registration, user listing, broadcasting, private messaging, chat rooms, file uploads, and graceful disconnection. It explained how to use a receiving thread for incoming messages and how to send raw binary file data. ChatGPT also provided instructions for checking project files and recompiling the applications after the VM shutdown.
+
+**How I Used the Output:** I backed up the previous client code, copied the updated implementation into client_3562.c, and compiled it using GCC with POSIX threads. I tested two interactive C clients registered as amal and nimal.
+
+**Testing Result:** Registration, broadcast messaging, private messaging, and chat room messaging worked successfully between the two clients. File upload using SENDFILE nimal test_binary.bin returned OK FILE_RECEIVED test_binary.bin NID:7635. Matching SHA-256 hashes and cmp confirmed that the original and received binary files were identical. After the virtual machine unexpectedly stopped, I restarted CentOS and successfully recompiled both the server and client.
+
+**Learning Outcome:** I learned how concurrent sending and receiving work in a TCP client, how a client automatically calculates file size before upload, and how Git and source backups help protect development progress.
+
+**Current Limitation:** The personalised Makefile, persistent server-side logging, final documentation, and final submission checks are still pending.

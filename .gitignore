@@ -12,3 +12,6 @@ storage/
 
 # Submission archives
 *.zip
+
+# Local binary test files
+test_binary.bin

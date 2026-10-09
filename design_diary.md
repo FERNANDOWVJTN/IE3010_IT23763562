@@ -107,3 +107,15 @@ I implemented the SENDFILE command in the NetMessenger server to receive binary 
 **Testing Result:** I transferred a 30-byte binary test file containing newline, null, and non-ASCII bytes. The stored file had the same size and SHA-256 hash as the original, and the cmp command confirmed that both files were identical. Oversized file requests and unsafe filenames were rejected. An interrupted transfer did not leave an incomplete file at the expected storage path. All clients disconnected, and the active connection count returned to zero.
 
 **Learning Outcome:** I learned the difference between text-based commands and raw binary data in a TCP stream, how to verify file integrity, and why file-size validation and cleanup are important.
+
+
+### Entry 09 — 09 October 2026
+**Activity:** Interactive TCP Client Implementation
+
+I developed an interactive C client to replace manual testing through Ncat. The client connects to my personalised TCP server on port 9562 and supports registration, user listing, broadcast messaging, private messaging, chat rooms, binary file uploads, and graceful disconnection.
+
+**Design Decision:** I used a separate receiving thread so the client can display incoming messages while the user enters commands. For SENDFILE, the client determines the local file size and sends the protocol header followed by the raw file bytes.
+
+**Testing Result:** I tested two C clients registered as amal and nimal. Registration, broadcast messaging, private messaging, chat room messaging, and file upload worked successfully. I verified the uploaded file using matching SHA-256 hashes and an exact comparison using cmp. After an unexpected VM shutdown, I restarted CentOS and successfully recompiled both the server and client without errors or warnings.
+
+**Learning Outcome:** I learned how a TCP client can handle sending and receiving concurrently, how to upload binary files programmatically, and how to recover development work after an unexpected virtual machine shutdown.
