@@ -37,3 +37,15 @@
 ---
 
 **Note:** Additional AI interactions, especially code generation, debugging, testing, and report assistance, will be recorded throughout development. Full prompts or accurate prompt references should be retained where practical.
+
+## Interaction 04 — Basic TCP Socket Programming
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested beginner-friendly guidance and complete C source code for creating and testing a basic TCP server and client on CentOS Linux.
+
+**AI Assistance:** ChatGPT provided sample implementations using the BSD sockets API, explained the socket functions, and suggested compilation and connection-testing commands.
+
+**How I Used the Output:** I copied the initial implementations into my personalised source files, compiled them using GCC, and tested the connections using Ncat and the client program. I checked the terminal outputs to confirm successful TCP connections. The current implementation only establishes and closes connections; the messaging functionality is still pending.
+
+**Verification:** Both programs compiled without reported warnings, the server listened on port 9562, and the TCP connection tests succeeded.

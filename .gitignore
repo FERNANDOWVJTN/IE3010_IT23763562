@@ -1,0 +1,14 @@
+
+# Compiled binaries
+server_3562
+client_3562
+*.o
+
+# Generated logs
+*.log
+
+# Received files
+storage/
+
+# Submission archives
+*.zip
