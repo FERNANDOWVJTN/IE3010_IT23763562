@@ -66,3 +66,17 @@
 **Current Limitation:** This version handles TCP connections but does not yet implement the required chat commands, message forwarding, or file transfers.
 
 **Learning Outcome:** I gained a better understanding of how threads allow multiple clients to remain connected and how a mutex protects shared data.
+
+## Interaction 06 — User Registration and Presence
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested complete updated C server code and step-by-step testing instructions for user registration, listing connected users, duplicate username handling, and client disconnections.
+
+**AI Assistance:** ChatGPT provided a server implementation using a mutex-protected user registry, line-based TCP command processing, personalised NID responses, and JOIN/LEAVE presence notifications. It also suggested tests using multiple Ncat clients.
+
+**How I Used the Output:** I replaced the previous server code, compiled it using GCC, and tested REGISTER, LIST, duplicate usernames, QUIT, and unexpected disconnections. I compared the responses with the assignment protocol.
+
+**Testing Result:** Registration and user listing worked. Duplicate usernames were rejected with the expected error response. QUIT returned OK BYE NID:7635, and disconnected users were removed from the active user list.
+
+**Learning Outcome:** I learned how to manage registered users across multiple threads, validate usernames, process newline-terminated commands, and clean up user information after disconnection.

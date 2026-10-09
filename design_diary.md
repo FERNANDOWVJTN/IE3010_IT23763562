@@ -43,3 +43,17 @@ I tested the server by opening five Ncat connections simultaneously. The server 
 **Testing Result:** The server successfully maintained five simultaneous TCP connections and handled individual disconnections without crashing during the test.
 
 **Learning Outcome:** I learned how `pthread_create()`, `pthread_detach()`, and mutex locking help manage multiple TCP clients.
+
+
+### Entry 04 — 09 October 2026
+**Activity:** User Registration, Presence and Disconnection Handling
+
+I implemented user registration and listing using the specified line-based TCP protocol. I added a shared user list protected by a mutex to prevent duplicate usernames when multiple clients register concurrently.
+
+I tested registration with different usernames, duplicate username detection, and the LIST command. I also tested graceful disconnection using QUIT and unexpected disconnection by terminating an Ncat client with Ctrl+C.
+
+**Design Decision:** I used a mutex-protected user registry to manage connected users safely across multiple client threads.
+
+**Testing Result:** The server returned the correct personalised responses using NID:7635. JOIN and LEAVE notifications worked, and disconnected users were removed from the active user list.
+
+**Learning Outcome:** I learned how a multi-threaded server maintains shared user information and detects client disconnections.
