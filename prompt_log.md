@@ -112,3 +112,20 @@
 **Learning Outcome:** I learned the difference between broadcast and private messaging, how to search for registered users in a shared client list, and why mutex synchronization is important in a multi-threaded server.
 
 **Current Limitation:** Chat rooms, binary file transfer, server-side logging, and the complete interactive client application are still pending.
+
+
+## Interaction 09 — Chat Room Management Implementation
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested complete updated C server code and step-by-step guidance for implementing JOIN, LEAVE, ROOMS, and RMSG commands while preserving existing NetMessenger functionality.
+
+**AI Assistance:** ChatGPT provided an updated server implementation using linked lists to manage chat rooms and their memberships. It explained room creation, room listing, membership validation, room message forwarding, and automatic cleanup of empty rooms. It also provided testing instructions using multiple Ncat clients.
+
+**How I Used the Output:** I replaced the existing server code with the updated implementation and compiled it using GCC with POSIX threads. I tested the room functionality using three registered clients named amal, nimal, and kasun.
+
+**Testing Result:** Room creation and joining worked successfully. Messages were delivered only to the appropriate room members. Non-members and unknown rooms received ERR 003 ROOM_NOT_FOUND NID:7635. I also tested room leaving, automatic deletion of empty rooms, and unexpected client disconnections using Ctrl+C. All clients were eventually disconnected, and the server's active connection count returned to zero.
+
+**Learning Outcome:** I learned how linked lists can represent multiple chat rooms and their members, how room membership controls message delivery, and how mutex synchronization helps manage shared information across client threads.
+
+**Current Limitation:** Binary file transfer, persistent server-side logging, a complete interactive client application, and final documentation are still pending.

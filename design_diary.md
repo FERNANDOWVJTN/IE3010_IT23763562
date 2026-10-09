@@ -83,3 +83,15 @@ I added the PMSG command to the existing multi-threaded TCP server. The server s
 **Testing Result:** I tested private messaging using amal, nimal, and kasun. Messages sent between amal and nimal were delivered correctly, while kasun did not receive those private messages. An unknown username returned ERR 002 USER_NOT_FOUND, and an incomplete PMSG command returned an error. I also confirmed that broadcast messaging continued to work and that all three clients responded correctly to QUIT.
 
 **Learning Outcome:** I learned how private messaging differs from broadcasting and how to locate a specific connected user safely in a multi-threaded TCP server.
+
+
+### Entry 07 — 09 October 2026
+**Activity:** Chat Room Management Implementation
+
+I implemented the JOIN, LEAVE, ROOMS, and RMSG commands in my NetMessenger TCP server. I used linked lists to maintain chat rooms and their members, with a POSIX mutex to protect shared information.
+
+**Design Decision:** A room is created when the first user joins it and removed automatically when its last member leaves. Room messages are forwarded only to other registered members of the same room.
+
+**Testing Result:** I tested the implementation using three clients: amal, nimal, and kasun. I confirmed room creation, membership validation, room message delivery, and correct error responses for non-members and unknown rooms. I also tested abrupt client disconnections using Ctrl+C. The server removed disconnected users from their rooms, and empty rooms were deleted automatically. All clients were eventually disconnected, and the active connection count returned to zero.
+
+**Learning Outcome:** I learned how to manage room memberships using linked data structures, how to restrict messages to specific groups, and why shared room information requires thread synchronization.
