@@ -57,3 +57,17 @@ I tested registration with different usernames, duplicate username detection, an
 **Testing Result:** The server returned the correct personalised responses using NID:7635. JOIN and LEAVE notifications worked, and disconnected users were removed from the active user list.
 
 **Learning Outcome:** I learned how a multi-threaded server maintains shared user information and detects client disconnections.
+
+
+### Entry 05 — 09 October 2026
+**Activity:** Broadcast Messaging Implementation
+
+I implemented the BCAST command using the existing multi-threaded server. The server forwards a broadcast message to all other registered clients while sending an OK SENT response with my personalised NID tag to the sender.
+
+I tested the functionality using three connected users: amal, nimal, and kasun. Messages from amal were delivered to nimal and kasun, and a reverse broadcast from nimal was also successful.
+
+**Design Decision:** I used the shared client list and mutex to coordinate message delivery between registered clients.
+
+**Testing Result:** Broadcast messaging worked in both directions. Empty messages and unknown commands returned error responses without crashing the server. All clients disconnected successfully, and the active connection count returned to zero.
+
+**Learning Outcome:** I learned how the server forwards messages between multiple TCP clients and why concurrent access to shared connection data must be controlled.

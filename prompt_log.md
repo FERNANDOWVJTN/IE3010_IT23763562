@@ -80,3 +80,19 @@
 **Testing Result:** Registration and user listing worked. Duplicate usernames were rejected with the expected error response. QUIT returned OK BYE NID:7635, and disconnected users were removed from the active user list.
 
 **Learning Outcome:** I learned how to manage registered users across multiple threads, validate usernames, process newline-terminated commands, and clean up user information after disconnection.
+
+## Interaction 07 — Broadcast Messaging Implementation
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested complete updated C server code and step-by-step testing guidance for implementing broadcast messaging according to the NetMessenger protocol.
+
+**AI Assistance:** ChatGPT provided an updated server implementation with the BCAST command, message forwarding to other registered clients, personalised NID responses, and handling for empty messages. It also suggested testing with three connected users.
+
+**How I Used the Output:** I created a backup of my previous server code, replaced the existing implementation with the updated version, and compiled it using GCC with POSIX threads enabled. I tested broadcast messaging using three Ncat clients named amal, nimal, and kasun.
+
+**Testing Result:** Messages sent by amal were delivered to nimal and kasun. A reverse broadcast from nimal also worked. The sender received OK SENT NID:7635, while recipients received correctly formatted MSG BCAST messages. Empty messages and invalid commands produced error responses. All clients disconnected successfully.
+
+**Learning Outcome:** I learned how broadcast messaging is implemented using a shared client registry and how the server distinguishes sender responses from messages forwarded to other clients.
+
+**Current Limitation:** Private messaging, chat rooms, file sharing, and server-side logging are not yet implemented.
