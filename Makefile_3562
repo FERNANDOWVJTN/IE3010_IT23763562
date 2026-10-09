@@ -1,0 +1,28 @@
+
+CC = gcc
+CFLAGS = -Wall -Wextra -std=c11 -pthread
+
+SERVER_SRC = server_3562.c
+CLIENT_SRC = client_3562.c
+
+SERVER = server_3562
+CLIENT = client_3562
+
+.PHONY: all clean run-server run-client
+
+all: $(SERVER) $(CLIENT)
+
+$(SERVER): $(SERVER_SRC)
+	$(CC) $(CFLAGS) $(SERVER_SRC) -o $(SERVER)
+
+$(CLIENT): $(CLIENT_SRC)
+	$(CC) $(CFLAGS) $(CLIENT_SRC) -o $(CLIENT)
+
+run-server: $(SERVER)
+	./$(SERVER)
+
+run-client: $(CLIENT)
+	./$(CLIENT)
+
+clean:
+	rm -f $(SERVER) $(CLIENT)

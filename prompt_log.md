@@ -163,3 +163,20 @@
 **Learning Outcome:** I learned how concurrent sending and receiving work in a TCP client, how a client automatically calculates file size before upload, and how Git and source backups help protect development progress.
 
 **Current Limitation:** The personalised Makefile, persistent server-side logging, final documentation, and final submission checks are still pending.
+
+
+## Interaction 12 — Personalised Makefile Implementation
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested step-by-step guidance for creating and testing the personalised Makefile_3562 to automate the compilation and execution of my NetMessenger C server and client applications.
+
+**AI Assistance:** ChatGPT provided a complete Makefile with GCC compiler settings, source file dependencies, and targets for building, cleaning, and running the server and client. It also explained the importance of TAB characters in Makefile command lines.
+
+**How I Used the Output:** I opened Makefile_3562 using nano and added the provided Makefile instructions. I then tested the clean, build, run-server, and run-client targets on CentOS.
+
+**Testing Result:** The clean target removed both executables, and the build target successfully recompiled server_3562 and client_3562 without reported warnings or errors. I started the server and client using the Makefile targets. The client successfully executed REGISTER amal, LIST, and QUIT. The server was stopped, and port 9562 was no longer listening.
+
+**Learning Outcome:** I learned how Makefile rules, dependencies, and compiler flags automate C project builds and simplify running multiple programs.
+
+**Current Limitation:** Persistent server logging, final integration testing, the final design diary, implementation report, reflection, and submission package are still pending.

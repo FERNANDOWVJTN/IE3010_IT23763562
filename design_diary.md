@@ -119,3 +119,15 @@ I developed an interactive C client to replace manual testing through Ncat. The 
 **Testing Result:** I tested two C clients registered as amal and nimal. Registration, broadcast messaging, private messaging, chat room messaging, and file upload worked successfully. I verified the uploaded file using matching SHA-256 hashes and an exact comparison using cmp. After an unexpected VM shutdown, I restarted CentOS and successfully recompiled both the server and client without errors or warnings.
 
 **Learning Outcome:** I learned how a TCP client can handle sending and receiving concurrently, how to upload binary files programmatically, and how to recover development work after an unexpected virtual machine shutdown.
+
+
+### Entry 10 — 09 October 2026
+**Activity:** Personalised Makefile Implementation
+
+I created Makefile_3562 to automate the compilation and execution of the NetMessenger server and client applications.
+
+**Design Decision:** I used GCC with -Wall, -Wextra, -std=c11, and -pthread flags. The Makefile includes targets for building both applications, cleaning executables, and running the server or client separately.
+
+**Testing Result:** I tested the clean and build targets successfully. Both executables were compiled without reported warnings or errors. I also used the run-server and run-client targets to start the applications. The client registered as amal, retrieved the user list, and disconnected using QUIT. The server was stopped, and port 9562 was no longer listening.
+
+**Learning Outcome:** I learned how Makefile targets and dependencies simplify repeated compilation and help make a C project easier to build and test.
