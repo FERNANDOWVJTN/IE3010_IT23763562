@@ -29,3 +29,17 @@ The server successfully accepted TCP connections, and the client connected using
 **Challenge:** The initial server terminated after starting because it did not yet have a connection-handling loop. I updated the server to continuously accept connections and verified that it was listening using the `ss` command.
 
 **Learning Outcome:** I learned how `socket()`, `bind()`, `listen()`, `accept()`, and `connect()` work together in a TCP client-server application.
+
+
+### Entry 03 — 09 October 2026
+**Activity:** Multi-Client Concurrency Implementation
+
+I implemented multi-client connection handling using POSIX threads. Each accepted client connection is handled by a separate thread, while a mutex protects the shared active-client counter.
+
+I tested the server by opening five Ncat connections simultaneously. The server correctly displayed five active clients. I then disconnected the clients one by one and verified that the active-client count returned to zero.
+
+**Design Decision:** I selected POSIX threads because they allow the server to handle multiple clients concurrently while keeping a separate execution path for each connection.
+
+**Testing Result:** The server successfully maintained five simultaneous TCP connections and handled individual disconnections without crashing during the test.
+
+**Learning Outcome:** I learned how `pthread_create()`, `pthread_detach()`, and mutex locking help manage multiple TCP clients.

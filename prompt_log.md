@@ -49,3 +49,20 @@
 **How I Used the Output:** I copied the initial implementations into my personalised source files, compiled them using GCC, and tested the connections using Ncat and the client program. I checked the terminal outputs to confirm successful TCP connections. The current implementation only establishes and closes connections; the messaging functionality is still pending.
 
 **Verification:** Both programs compiled without reported warnings, the server listened on port 9562, and the TCP connection tests succeeded.
+
+
+## Interaction 05 — Multi-Client Concurrency
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested step-by-step guidance and complete updated C server code to support multiple simultaneous TCP clients using POSIX threads.
+
+**AI Assistance:** ChatGPT provided a pthread-based server implementation with a separate thread for each client, mutex-protected client counting, connection handling, and disconnection detection. It also explained the threading functions and suggested tests using Ncat.
+
+**How I Used the Output:** I replaced my previous server code with the updated implementation and compiled it using GCC with the `-pthread` option. I tested the server using five simultaneous Ncat connections and checked the server output as clients connected and disconnected.
+
+**Testing Result:** The server displayed five active clients and correctly reduced the active-client count to zero after all clients disconnected. The tests completed without a reported server crash.
+
+**Current Limitation:** This version handles TCP connections but does not yet implement the required chat commands, message forwarding, or file transfers.
+
+**Learning Outcome:** I gained a better understanding of how threads allow multiple clients to remain connected and how a mutex protects shared data.
