@@ -1,6 +1,4 @@
-
 #define _POSIX_C_SOURCE 200809L
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,852 +7,499 @@
 #include <unistd.h>
 #include <signal.h>
 #include <pthread.h>
-#include <arpa/inet.h>
+#include <stdint.h>
+#include <inttypes.h>
+#include <sys/stat.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
 
 #define PORT 9562
 #define NODE_ID "NID:7635"
-#define BACKLOG 10
 #define MAX_CLIENTS 64
-#define MAX_USERNAME 31
-#define MAX_ROOMNAME 31
 #define MAX_ROOMS 64
+#define MAX_NAME 31
 #define MAX_LINE 4096
+#define MAX_FILE_SIZE (10ULL * 1024ULL * 1024ULL)
+#define STORAGE_ROOT "storage/IT23763562"
 
 typedef struct Client {
     int fd;
-    char username[MAX_USERNAME + 1];
     int registered;
+    char username[MAX_NAME + 1];
     struct Client *next;
 } Client;
-
-typedef struct RoomMember {
+typedef struct Member {
     Client *client;
-    struct RoomMember *next;
-} RoomMember;
-
+    struct Member *next;
+} Member;
 typedef struct Room {
-    char name[MAX_ROOMNAME + 1];
-    RoomMember *members;
+    char name[MAX_NAME + 1];
+    Member *members;
     struct Room *next;
 } Room;
 
 static Client *clients = NULL;
 static Room *rooms = NULL;
+static int client_count = 0, room_count = 0;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
-static pthread_mutex_t clients_lock =
-    PTHREAD_MUTEX_INITIALIZER;
-
-static int connected_count = 0;
-static int room_count = 0;
-
-/* Send all bytes, including partial TCP sends. */
-static int send_all(int fd, const char *data, size_t length)
-{
-    size_t sent = 0;
-
-    while (sent < length) {
-        ssize_t n = send(fd, data + sent,
-                         length - sent, MSG_NOSIGNAL);
-
-        if (n < 0 && errno == EINTR)
-            continue;
-
-        if (n <= 0)
-            return -1;
-
-        sent += (size_t)n;
+static int send_all(int fd, const void *data, size_t length) {
+    const unsigned char *p = data;
+    while (length) {
+        ssize_t n = send(fd, p, length, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return -1;
+        p += n;
+        length -= (size_t)n;
     }
-
     return 0;
 }
-
-/* Caller must hold clients_lock. */
-static void send_locked(Client *client, const char *message)
-{
-    if (send_all(client->fd, message, strlen(message)) < 0) {
-        /* Client thread handles eventual disconnection. */
-    }
+/* All writes to clients take the same lock, preventing interleaved messages. */
+static void send_locked(Client *c, const char *s) {
+    (void)send_all(c->fd, s, strlen(s));
 }
-
-static void reply(Client *client, const char *message)
-{
-    pthread_mutex_lock(&clients_lock);
-    send_locked(client, message);
-    pthread_mutex_unlock(&clients_lock);
+static void reply(Client *c, const char *s) {
+    pthread_mutex_lock(&lock);
+    send_locked(c, s);
+    pthread_mutex_unlock(&lock);
 }
-
-/* Read one newline-terminated TCP command. */
-static int read_line(int fd, char *buffer, size_t capacity)
-{
-    size_t length = 0;
-    int too_long = 0;
-
-    while (1) {
+/* Reading one byte at a time avoids consuming file payload as command text. */
+static int read_line(int fd, char *out, size_t capacity) {
+    size_t i = 0;
+    int overflow = 0;
+    for (;;) {
         char ch;
         ssize_t n = recv(fd, &ch, 1, 0);
-
-        if (n == 0)
-            return 0;
-
+        if (n == 0) return 0;
         if (n < 0) {
-            if (errno == EINTR)
-                continue;
-
+            if (errno == EINTR) continue;
             return -1;
         }
-
         if (ch == '\n') {
-            if (too_long)
-                return -2;
-
-            if (length > 0 && buffer[length - 1] == '\r')
-                length--;
-
-            buffer[length] = '\0';
+            if (overflow) return -2;
+            if (i && out[i - 1] == '\r') --i;
+            out[i] = '\0';
             return 1;
         }
-
-        if (!too_long && length + 1 < capacity) {
-            buffer[length++] = ch;
-        } else {
-            too_long = 1;
-        }
+        if (!overflow && i + 1 < capacity) out[i++] = ch;
+        else overflow = 1;
     }
 }
-
-/* Validate usernames and room names. */
-static int valid_name(const char *name, size_t maximum)
-{
-    size_t length = strlen(name);
-
-    if (length == 0 || length > maximum)
-        return 0;
-
-    for (size_t i = 0; i < length; i++) {
-        unsigned char ch = (unsigned char)name[i];
-
-        if (!isalnum(ch) && ch != '_')
-            return 0;
-    }
-
+static int valid_name(const char *s) {
+    size_t n = strlen(s);
+    if (!n || n > MAX_NAME) return 0;
+    for (size_t i = 0; i < n; ++i)
+        if (!isalnum((unsigned char)s[i]) && s[i] != '_') return 0;
     return 1;
 }
-
-/* All lookup helpers require clients_lock. */
-static Client *find_user(const char *username)
-{
-    for (Client *p = clients; p != NULL; p = p->next) {
-        if (p->registered &&
-            strcmp(p->username, username) == 0)
-            return p;
+static int valid_filename(const char *s) {
+    size_t n = strlen(s);
+    if (!n || n > 200 || !strcmp(s, ".") || !strcmp(s, "..")) return 0;
+    for (size_t i = 0; i < n; ++i) {
+        unsigned char ch = (unsigned char)s[i];
+        if (!isalnum(ch) && ch != '.' && ch != '_' && ch != '-') return 0;
     }
-
+    return 1;
+}
+/* Lookup functions below require lock to be held. */
+static Client *find_user(const char *name) {
+    for (Client *c = clients; c; c = c->next)
+        if (c->registered && !strcmp(c->username, name)) return c;
     return NULL;
 }
-
-static Room *find_room(const char *name)
-{
-    for (Room *r = rooms; r != NULL; r = r->next) {
-        if (strcmp(r->name, name) == 0)
-            return r;
-    }
-
+static Room *find_room(const char *name) {
+    for (Room *r = rooms; r; r = r->next)
+        if (!strcmp(r->name, name)) return r;
     return NULL;
 }
-
-static int is_room_member(Room *room, Client *client)
-{
-    for (RoomMember *m = room->members;
-         m != NULL; m = m->next) {
-        if (m->client == client)
-            return 1;
-    }
-
+static int member_of(Room *room, Client *c) {
+    for (Member *m = room->members; m; m = m->next)
+        if (m->client == c) return 1;
     return 0;
 }
-
-/* Remove a room once its last member has left. */
-static void remove_empty_room(Room *room)
-{
-    if (room->members != NULL)
-        return;
-
-    Room **current = &rooms;
-
-    while (*current != NULL) {
-        if (*current == room) {
-            *current = room->next;
-            free(room);
-            room_count--;
-            return;
-        }
-
-        current = &(*current)->next;
+static void delete_if_empty(Room *room) {
+    if (room->members) return;
+    Room **p = &rooms;
+    while (*p && *p != room) p = &(*p)->next;
+    if (*p) {
+        *p = room->next;
+        free(room);
+        --room_count;
     }
 }
-
-/* Caller must hold clients_lock. */
-static void notify_others(Client *sender, const char *event)
-{
-    char message[128];
-
-    snprintf(message, sizeof(message),
-             "MSG %s %s\n", event, sender->username);
-
-    for (Client *p = clients; p != NULL; p = p->next) {
-        if (p != sender && p->registered)
-            send_locked(p, message);
-    }
+static void notify_presence(Client *c, const char *event) {
+    char msg[96];
+    snprintf(msg, sizeof msg, "MSG %s %s\n", event, c->username);
+    for (Client *p = clients; p; p = p->next)
+        if (p != c && p->registered) send_locked(p, msg);
 }
-
-/* REGISTER command. */
-static void register_user(Client *client, const char *name)
-{
-    if (!valid_name(name, MAX_USERNAME)) {
-        reply(client,
-              "ERR 005 INVALID_USERNAME " NODE_ID "\n");
-        return;
+static void register_user(Client *c, const char *name) {
+    if (!valid_name(name)) {
+        reply(c, "ERR 005 INVALID_USERNAME " NODE_ID "\n"); return;
     }
-
-    pthread_mutex_lock(&clients_lock);
-
-    if (find_user(name) != NULL) {
-        send_locked(client,
-                    "ERR 001 USERNAME_TAKEN " NODE_ID "\n");
-    } else {
-        strcpy(client->username, name);
-        client->registered = 1;
-
-        char response[128];
-
-        snprintf(response, sizeof(response),
-                 "OK REGISTERED %s " NODE_ID "\n", name);
-
-        send_locked(client, response);
-        notify_others(client, "JOIN");
-
+    pthread_mutex_lock(&lock);
+    if (find_user(name)) send_locked(c, "ERR 001 USERNAME_TAKEN " NODE_ID "\n");
+    else {
+        char msg[96];
+        strcpy(c->username, name);
+        c->registered = 1;
+        snprintf(msg, sizeof msg, "OK REGISTERED %s " NODE_ID "\n", name);
+        send_locked(c, msg);
+        notify_presence(c, "JOIN");
         printf("[REGISTERED] %s\n", name);
         fflush(stdout);
     }
-
-    pthread_mutex_unlock(&clients_lock);
+    pthread_mutex_unlock(&lock);
 }
-
-/* LIST command. */
-static void list_users(Client *client)
-{
-    char response[MAX_LINE];
-    size_t used;
+static void list_users(Client *c) {
+    char msg[MAX_LINE];
+    size_t n = (size_t)snprintf(msg, sizeof msg, "OK USERS ");
     int first = 1;
-
-    pthread_mutex_lock(&clients_lock);
-
-    used = (size_t)snprintf(response, sizeof(response),
-                            "OK USERS ");
-
-    for (Client *p = clients; p != NULL; p = p->next) {
-        if (!p->registered)
-            continue;
-
-        size_t length = strlen(p->username);
-
-        if (used + length + 32 >= sizeof(response))
-            break;
-
-        if (!first)
-            response[used++] = ',';
-
-        memcpy(response + used, p->username, length);
-        used += length;
-        first = 0;
+    pthread_mutex_lock(&lock);
+    for (Client *p = clients; p; p = p->next) {
+        if (!p->registered) continue;
+        size_t z = strlen(p->username);
+        if (n + z + 32 >= sizeof msg) break;
+        if (!first) msg[n++] = ',';
+        memcpy(msg + n, p->username, z);
+        n += z; first = 0;
     }
-
-    snprintf(response + used, sizeof(response) - used,
-             " " NODE_ID "\n");
-
-    send_locked(client, response);
-    pthread_mutex_unlock(&clients_lock);
+    snprintf(msg + n, sizeof msg - n, " " NODE_ID "\n");
+    send_locked(c, msg);
+    pthread_mutex_unlock(&lock);
 }
-
-/* BCAST command. */
-static void broadcast_message(Client *sender, const char *text)
-{
-    if (text[0] == '\0') {
-        reply(sender,
-              "ERR 005 EMPTY_MESSAGE " NODE_ID "\n");
-        return;
-    }
-
-    char forwarded[MAX_LINE + MAX_USERNAME + 32];
-
-    snprintf(forwarded, sizeof(forwarded),
-             "MSG BCAST %s %s\n",
-             sender->username, text);
-
-    pthread_mutex_lock(&clients_lock);
-
-    for (Client *p = clients; p != NULL; p = p->next) {
-        if (p->registered && p != sender)
-            send_locked(p, forwarded);
-    }
-
-    send_locked(sender, "OK SENT " NODE_ID "\n");
-
-    printf("[BCAST] %s: %s\n", sender->username, text);
+static void broadcast(Client *c, const char *body) {
+    if (!*body) { reply(c, "ERR 005 EMPTY_MESSAGE " NODE_ID "\n"); return; }
+    char msg[MAX_LINE + 64];
+    snprintf(msg, sizeof msg, "MSG BCAST %s %s\n", c->username, body);
+    pthread_mutex_lock(&lock);
+    for (Client *p = clients; p; p = p->next)
+        if (p != c && p->registered) send_locked(p, msg);
+    send_locked(c, "OK SENT " NODE_ID "\n");
+    printf("[BCAST] %s: %s\n", c->username, body);
     fflush(stdout);
-
-    pthread_mutex_unlock(&clients_lock);
+    pthread_mutex_unlock(&lock);
 }
-
-/* PMSG command. */
-static void private_message(Client *sender, const char *args)
-{
-    const char *space = strchr(args, ' ');
-
-    if (space == NULL || space == args ||
-        space[1] == '\0') {
-        reply(sender,
-              "ERR 005 INVALID_PMSG " NODE_ID "\n");
-        return;
+static void private_message(Client *c, const char *args) {
+    const char *sp = strchr(args, ' ');
+    if (!sp || sp == args || !sp[1]) {
+        reply(c, "ERR 005 INVALID_PMSG " NODE_ID "\n"); return;
     }
-
-    size_t name_length = (size_t)(space - args);
-
-    if (name_length > MAX_USERNAME) {
-        reply(sender,
-              "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
-        return;
+    size_t n = (size_t)(sp - args);
+    if (n > MAX_NAME) {
+        reply(c, "ERR 002 USER_NOT_FOUND " NODE_ID "\n"); return;
     }
-
-    char target_name[MAX_USERNAME + 1];
-
-    memcpy(target_name, args, name_length);
-    target_name[name_length] = '\0';
-
-    pthread_mutex_lock(&clients_lock);
-
-    Client *target = find_user(target_name);
-
-    if (target == NULL) {
-        send_locked(sender,
-                    "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
-    } else {
-        char forwarded[MAX_LINE + MAX_USERNAME + 32];
-
-        snprintf(forwarded, sizeof(forwarded),
-                 "MSG PRIV %s %s\n",
-                 sender->username, space + 1);
-
-        send_locked(target, forwarded);
-        send_locked(sender, "OK SENT " NODE_ID "\n");
-
-        printf("[PMSG] %s -> %s\n",
-               sender->username, target_name);
+    char who[MAX_NAME + 1], msg[MAX_LINE + 64];
+    memcpy(who, args, n); who[n] = '\0';
+    pthread_mutex_lock(&lock);
+    Client *target = find_user(who);
+    if (!target) send_locked(c, "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
+    else {
+        snprintf(msg, sizeof msg, "MSG PRIV %s %s\n", c->username, sp + 1);
+        send_locked(target, msg);
+        send_locked(c, "OK SENT " NODE_ID "\n");
+        printf("[PMSG] %s -> %s\n", c->username, who);
         fflush(stdout);
     }
-
-    pthread_mutex_unlock(&clients_lock);
+    pthread_mutex_unlock(&lock);
 }
-
-/* JOIN command: create room if necessary. */
-static void join_room(Client *client, const char *name)
-{
-    if (!valid_name(name, MAX_ROOMNAME)) {
-        reply(client,
-              "ERR 005 INVALID_ROOM " NODE_ID "\n");
-        return;
-    }
-
-    pthread_mutex_lock(&clients_lock);
-
-    Room *room = find_room(name);
-
-    if (room == NULL) {
+static void join_room(Client *c, const char *name) {
+    if (!valid_name(name)) { reply(c, "ERR 005 INVALID_ROOM " NODE_ID "\n"); return; }
+    pthread_mutex_lock(&lock);
+    Room *r = find_room(name);
+    if (!r) {
         if (room_count >= MAX_ROOMS) {
-            send_locked(client,
-                        "ERR 005 ROOM_LIMIT " NODE_ID "\n");
-            pthread_mutex_unlock(&clients_lock);
-            return;
+            send_locked(c, "ERR 005 ROOM_LIMIT " NODE_ID "\n");
+            pthread_mutex_unlock(&lock); return;
         }
-
-        room = calloc(1, sizeof(Room));
-
-        if (room == NULL) {
-            send_locked(client,
-                        "ERR 005 SERVER_ERROR " NODE_ID "\n");
-            pthread_mutex_unlock(&clients_lock);
-            return;
+        r = calloc(1, sizeof *r);
+        if (!r) {
+            send_locked(c, "ERR 005 SERVER_ERROR " NODE_ID "\n");
+            pthread_mutex_unlock(&lock); return;
         }
-
-        strcpy(room->name, name);
-        room->next = rooms;
-        rooms = room;
-        room_count++;
+        strcpy(r->name, name); r->next = rooms; rooms = r; ++room_count;
     }
-
-    if (!is_room_member(room, client)) {
-        RoomMember *member = calloc(1, sizeof(RoomMember));
-
-        if (member == NULL) {
-            remove_empty_room(room);
-            send_locked(client,
-                        "ERR 005 SERVER_ERROR " NODE_ID "\n");
-            pthread_mutex_unlock(&clients_lock);
-            return;
+    if (!member_of(r, c)) {
+        Member *m = calloc(1, sizeof *m);
+        if (!m) {
+            delete_if_empty(r);
+            send_locked(c, "ERR 005 SERVER_ERROR " NODE_ID "\n");
+            pthread_mutex_unlock(&lock); return;
         }
-
-        member->client = client;
-        member->next = room->members;
-        room->members = member;
+        m->client = c; m->next = r->members; r->members = m;
     }
-
-    char response[128];
-
-    snprintf(response, sizeof(response),
-             "OK JOINED %s " NODE_ID "\n", name);
-
-    send_locked(client, response);
-
-    printf("[ROOM JOIN] %s -> %s\n",
-           client->username, name);
-    fflush(stdout);
-
-    pthread_mutex_unlock(&clients_lock);
+    char msg[96];
+    snprintf(msg, sizeof msg, "OK JOINED %s " NODE_ID "\n", name);
+    send_locked(c, msg);
+    printf("[ROOM JOIN] %s -> %s\n", c->username, name); fflush(stdout);
+    pthread_mutex_unlock(&lock);
 }
-
-/* LEAVE command. */
-static void leave_room(Client *client, const char *name)
-{
-    pthread_mutex_lock(&clients_lock);
-
-    Room *room = find_room(name);
-
-    if (room == NULL || !is_room_member(room, client)) {
-        send_locked(client,
-                    "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
-        pthread_mutex_unlock(&clients_lock);
-        return;
+static void leave_room(Client *c, const char *name) {
+    pthread_mutex_lock(&lock);
+    Room *r = find_room(name);
+    if (!r || !member_of(r, c)) {
+        send_locked(c, "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
+        pthread_mutex_unlock(&lock); return;
     }
-
-    RoomMember **current = &room->members;
-
-    while (*current != NULL) {
-        if ((*current)->client == client) {
-            RoomMember *removed = *current;
-            *current = removed->next;
-            free(removed);
-            break;
-        }
-
-        current = &(*current)->next;
-    }
-
-    char response[128];
-
-    snprintf(response, sizeof(response),
-             "OK LEFT %s " NODE_ID "\n", name);
-
-    send_locked(client, response);
-
-    printf("[ROOM LEAVE] %s -> %s\n",
-           client->username, name);
-    fflush(stdout);
-
-    remove_empty_room(room);
-
-    pthread_mutex_unlock(&clients_lock);
+    Member **p = &r->members;
+    while (*p && (*p)->client != c) p = &(*p)->next;
+    if (*p) { Member *old = *p; *p = old->next; free(old); }
+    char msg[96];
+    snprintf(msg, sizeof msg, "OK LEFT %s " NODE_ID "\n", name);
+    send_locked(c, msg);
+    printf("[ROOM LEAVE] %s -> %s\n", c->username, name); fflush(stdout);
+    delete_if_empty(r);
+    pthread_mutex_unlock(&lock);
 }
-
-/* ROOMS command. */
-static void list_rooms(Client *client)
-{
-    char response[MAX_LINE];
-    size_t used;
+static void list_rooms(Client *c) {
+    char msg[MAX_LINE];
+    size_t n = (size_t)snprintf(msg, sizeof msg, "OK ROOMS ");
     int first = 1;
-
-    pthread_mutex_lock(&clients_lock);
-
-    used = (size_t)snprintf(response, sizeof(response),
-                            "OK ROOMS ");
-
-    for (Room *r = rooms; r != NULL; r = r->next) {
-        size_t length = strlen(r->name);
-
-        if (used + length + 32 >= sizeof(response))
-            break;
-
-        if (!first)
-            response[used++] = ',';
-
-        memcpy(response + used, r->name, length);
-        used += length;
-        first = 0;
+    pthread_mutex_lock(&lock);
+    for (Room *r = rooms; r; r = r->next) {
+        size_t z = strlen(r->name);
+        if (n + z + 32 >= sizeof msg) break;
+        if (!first) msg[n++] = ',';
+        memcpy(msg + n, r->name, z); n += z; first = 0;
     }
-
-    snprintf(response + used, sizeof(response) - used,
-             " " NODE_ID "\n");
-
-    send_locked(client, response);
-    pthread_mutex_unlock(&clients_lock);
+    snprintf(msg + n, sizeof msg - n, " " NODE_ID "\n");
+    send_locked(c, msg);
+    pthread_mutex_unlock(&lock);
 }
-
-/* RMSG command: deliver only to other room members. */
-static void room_message(Client *sender, const char *args)
-{
-    const char *space = strchr(args, ' ');
-
-    if (space == NULL || space == args ||
-        space[1] == '\0') {
-        reply(sender,
-              "ERR 005 INVALID_RMSG " NODE_ID "\n");
-        return;
+static void room_message(Client *c, const char *args) {
+    const char *sp = strchr(args, ' ');
+    if (!sp || sp == args || !sp[1]) {
+        reply(c, "ERR 005 INVALID_RMSG " NODE_ID "\n"); return;
     }
-
-    size_t name_length = (size_t)(space - args);
-
-    if (name_length > MAX_ROOMNAME) {
-        reply(sender,
-              "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
-        return;
+    size_t n = (size_t)(sp - args);
+    if (n > MAX_NAME) { reply(c, "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n"); return; }
+    char name[MAX_NAME + 1], msg[MAX_LINE + 100];
+    memcpy(name, args, n); name[n] = '\0';
+    pthread_mutex_lock(&lock);
+    Room *r = find_room(name);
+    if (!r || !member_of(r, c)) send_locked(c, "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
+    else {
+        snprintf(msg, sizeof msg, "MSG ROOM %s %s %s\n", name, c->username, sp + 1);
+        for (Member *m = r->members; m; m = m->next)
+            if (m->client != c && m->client->registered) send_locked(m->client, msg);
+        send_locked(c, "OK SENT " NODE_ID "\n");
+        printf("[RMSG] %s -> room %s\n", c->username, name); fflush(stdout);
     }
-
-    char room_name[MAX_ROOMNAME + 1];
-
-    memcpy(room_name, args, name_length);
-    room_name[name_length] = '\0';
-
-    pthread_mutex_lock(&clients_lock);
-
-    Room *room = find_room(room_name);
-
-    if (room == NULL || !is_room_member(room, sender)) {
-        send_locked(sender,
-                    "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
-        pthread_mutex_unlock(&clients_lock);
-        return;
-    }
-
-    char forwarded[MAX_LINE + MAX_USERNAME +
-                   MAX_ROOMNAME + 40];
-
-    snprintf(forwarded, sizeof(forwarded),
-             "MSG ROOM %s %s %s\n",
-             room_name, sender->username, space + 1);
-
-    for (RoomMember *m = room->members;
-         m != NULL; m = m->next) {
-        if (m->client != sender && m->client->registered)
-            send_locked(m->client, forwarded);
-    }
-
-    send_locked(sender, "OK SENT " NODE_ID "\n");
-
-    printf("[RMSG] %s -> room %s\n",
-           sender->username, room_name);
-    fflush(stdout);
-
-    pthread_mutex_unlock(&clients_lock);
+    pthread_mutex_unlock(&lock);
 }
-
-/* Remove a disconnected client from every room. */
-static void remove_client_from_rooms(Client *client)
-{
-    Room *room = rooms;
-
-    while (room != NULL) {
-        Room *next_room = room->next;
-
-        RoomMember **current = &room->members;
-
-        while (*current != NULL) {
-            if ((*current)->client == client) {
-                RoomMember *removed = *current;
-                *current = removed->next;
-                free(removed);
-            } else {
-                current = &(*current)->next;
-            }
+static void cleanup_rooms(Client *c) {
+    for (Room *r = rooms; r;) {
+        Room *next = r->next;
+        Member **p = &r->members;
+        while (*p) {
+            if ((*p)->client == c) {
+                Member *old = *p; *p = old->next; free(old);
+            } else p = &(*p)->next;
         }
-
-        remove_empty_room(room);
-        room = next_room;
+        delete_if_empty(r);
+        r = next;
     }
 }
+static int make_directory(const char *path) {
+    if (mkdir(path, 0700) == 0 || errno == EEXIST) {
+        struct stat st;
+        return stat(path, &st) == 0 && S_ISDIR(st.st_mode) ? 0 : -1;
+    }
+    return -1;
+}
+/* Return 0 for file command handled; -1 to disconnect after failure. */
+static int receive_file(Client *sender, const char *args) {
+    char target[MAX_NAME + 1], filename[201], size_text[32], extra;
+    uint64_t size;
+    if (sscanf(args, "%31s %200s %31s %c", target, filename, size_text, &extra) != 3 ||
+        !valid_name(target) || !valid_filename(filename)) {
+        reply(sender, "ERR 005 INVALID_FILE_HEADER " NODE_ID "\n");
+        return -1; /* Unknown payload length: cannot resume safely. */
+    }
+    if (size_text[0] == '-' || size_text[0] == '+' || !isdigit((unsigned char)size_text[0])) {
+        reply(sender, "ERR 005 INVALID_FILE_SIZE " NODE_ID "\n"); return -1;
+    }
+    for (size_t i = 0; size_text[i]; ++i)
+        if (!isdigit((unsigned char)size_text[i])) {
+            reply(sender, "ERR 005 INVALID_FILE_SIZE " NODE_ID "\n"); return -1;
+        }
+    errno = 0;
+    unsigned long long parsed = strtoull(size_text, NULL, 10);
+    if (errno == ERANGE) {
+        reply(sender, "ERR 004 FILE_TOO_LARGE " NODE_ID "\n"); return -1;
+    }
+    size = (uint64_t)parsed;
+    if (size > MAX_FILE_SIZE) {
+        reply(sender, "ERR 004 FILE_TOO_LARGE " NODE_ID "\n"); return -1;
+    }
+    /* Target can be a registered username OR an existing room. */
+    pthread_mutex_lock(&lock);
+    Client *user = find_user(target);
+    Room *room = find_room(target);
+    int allowed = user != NULL || (room != NULL && member_of(room, sender));
+    if (!allowed) {
+        send_locked(sender, room ? "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n"
+                                 : "ERR 002 USER_NOT_FOUND " NODE_ID "\n");
+        pthread_mutex_unlock(&lock);
+        return -1; /* Do not interpret forthcoming bytes as text. */
+    }
+    pthread_mutex_unlock(&lock);
 
-/* Process commands. Return 0 on QUIT. */
-static int process_command(Client *client, const char *line)
-{
-    if (!client->registered) {
-        if (strncmp(line, "REGISTER ", 9) == 0)
-            register_user(client, line + 9);
-        else
-            reply(client,
-                  "ERR 005 REGISTER_REQUIRED " NODE_ID "\n");
-
+    char userdir[256], path[512], temporary[550];
+    snprintf(userdir, sizeof userdir, "%s/%s", STORAGE_ROOT, sender->username);
+    if (make_directory("storage") != 0 ||
+        make_directory(STORAGE_ROOT) != 0 ||
+        make_directory(userdir) != 0) {
+        reply(sender, "ERR 005 STORAGE_ERROR " NODE_ID "\n"); return -1;
+    }
+    snprintf(path, sizeof path, "%s/%s", userdir, filename);
+    snprintf(temporary, sizeof temporary, "%s/.upload_XXXXXX", userdir);
+    int out_fd = mkstemp(temporary);
+    if (out_fd < 0) {
+        reply(sender, "ERR 005 STORAGE_ERROR " NODE_ID "\n"); return -1;
+    }
+    unsigned char buffer[8192];
+    uint64_t remaining = size;
+    int failed = 0;
+    while (remaining) {
+        size_t need = remaining < sizeof buffer ? (size_t)remaining : sizeof buffer;
+        ssize_t n = recv(sender->fd, buffer, need, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { failed = 1; break; }
+        size_t written = 0;
+        while (written < (size_t)n) {
+            ssize_t w = write(out_fd, buffer + written, (size_t)n - written);
+            if (w < 0 && errno == EINTR) continue;
+            if (w <= 0) { failed = 1; break; }
+            written += (size_t)w;
+        }
+        if (failed) break;
+        remaining -= (uint64_t)n;
+    }
+    if (close(out_fd) != 0) failed = 1;
+    if (!failed && rename(temporary, path) != 0) failed = 1;
+    if (failed) {
+        unlink(temporary);
+        reply(sender, "ERR 005 FILE_TRANSFER_FAILED " NODE_ID "\n");
+        return -1;
+    }
+    char response[256];
+    snprintf(response, sizeof response, "OK FILE_RECEIVED %s " NODE_ID "\n", filename);
+    reply(sender, response);
+    printf("[FILE] %s -> %s: %s (%" PRIu64 " bytes)\n",
+           sender->username, target, path, size);
+    fflush(stdout);
+    return 0;
+}
+/* 1 = continue receiving commands; 0 = close connection. */
+static int process_command(Client *c, const char *line) {
+    if (!c->registered) {
+        if (!strncmp(line, "REGISTER ", 9)) register_user(c, line + 9);
+        else reply(c, "ERR 005 REGISTER_REQUIRED " NODE_ID "\n");
         return 1;
     }
-
-    if (strcmp(line, "LIST") == 0) {
-        list_users(client);
-    }
-    else if (strcmp(line, "QUIT") == 0) {
-        reply(client, "OK BYE " NODE_ID "\n");
-        return 0;
-    }
-    else if (strncmp(line, "BCAST ", 6) == 0) {
-        broadcast_message(client, line + 6);
-    }
-    else if (strcmp(line, "BCAST") == 0) {
-        reply(client,
-              "ERR 005 EMPTY_MESSAGE " NODE_ID "\n");
-    }
-    else if (strncmp(line, "PMSG ", 5) == 0) {
-        private_message(client, line + 5);
-    }
-    else if (strcmp(line, "PMSG") == 0) {
-        reply(client,
-              "ERR 005 INVALID_PMSG " NODE_ID "\n");
-    }
-    else if (strncmp(line, "JOIN ", 5) == 0) {
-        join_room(client, line + 5);
-    }
-    else if (strcmp(line, "JOIN") == 0) {
-        reply(client,
-              "ERR 005 INVALID_ROOM " NODE_ID "\n");
-    }
-    else if (strncmp(line, "LEAVE ", 6) == 0) {
-        leave_room(client, line + 6);
-    }
-    else if (strcmp(line, "LEAVE") == 0) {
-        reply(client,
-              "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
-    }
-    else if (strcmp(line, "ROOMS") == 0) {
-        list_rooms(client);
-    }
-    else if (strncmp(line, "RMSG ", 5) == 0) {
-        room_message(client, line + 5);
-    }
-    else if (strcmp(line, "RMSG") == 0) {
-        reply(client,
-              "ERR 005 INVALID_RMSG " NODE_ID "\n");
-    }
-    else if (strncmp(line, "REGISTER", 8) == 0) {
-        reply(client,
-              "ERR 005 ALREADY_REGISTERED " NODE_ID "\n");
-    }
-    else {
-        reply(client,
-              "ERR 005 UNKNOWN_COMMAND " NODE_ID "\n");
-    }
-
+    if (!strcmp(line, "LIST")) list_users(c);
+    else if (!strcmp(line, "QUIT")) { reply(c, "OK BYE " NODE_ID "\n"); return 0; }
+    else if (!strncmp(line, "BCAST ", 6)) broadcast(c, line + 6);
+    else if (!strcmp(line, "BCAST")) reply(c, "ERR 005 EMPTY_MESSAGE " NODE_ID "\n");
+    else if (!strncmp(line, "PMSG ", 5)) private_message(c, line + 5);
+    else if (!strcmp(line, "PMSG")) reply(c, "ERR 005 INVALID_PMSG " NODE_ID "\n");
+    else if (!strncmp(line, "JOIN ", 5)) join_room(c, line + 5);
+    else if (!strcmp(line, "JOIN")) reply(c, "ERR 005 INVALID_ROOM " NODE_ID "\n");
+    else if (!strncmp(line, "LEAVE ", 6)) leave_room(c, line + 6);
+    else if (!strcmp(line, "LEAVE")) reply(c, "ERR 003 ROOM_NOT_FOUND " NODE_ID "\n");
+    else if (!strcmp(line, "ROOMS")) list_rooms(c);
+    else if (!strncmp(line, "RMSG ", 5)) room_message(c, line + 5);
+    else if (!strcmp(line, "RMSG")) reply(c, "ERR 005 INVALID_RMSG " NODE_ID "\n");
+    else if (!strncmp(line, "SENDFILE ", 9)) return receive_file(c, line + 9) == 0;
+    else if (!strcmp(line, "SENDFILE")) reply(c, "ERR 005 INVALID_FILE_HEADER " NODE_ID "\n");
+    else if (!strncmp(line, "REGISTER", 8)) reply(c, "ERR 005 ALREADY_REGISTERED " NODE_ID "\n");
+    else reply(c, "ERR 005 UNKNOWN_COMMAND " NODE_ID "\n");
     return 1;
 }
-
-/* Each connected client has its own POSIX thread. */
-static void *handle_client(void *arg)
-{
-    Client *client = (Client *)arg;
+static void *handle_client(void *arg) {
+    Client *c = arg;
     char line[MAX_LINE];
-
-    while (1) {
-        int status = read_line(client->fd,
-                               line, sizeof(line));
-
-        if (status == 0)
-            break;
-
-        if (status == -1) {
-            perror("Client receive error");
-            break;
-        }
-
+    for (;;) {
+        int status = read_line(c->fd, line, sizeof line);
+        if (status == 0) break;
+        if (status == -1) { perror("recv"); break; }
         if (status == -2) {
-            reply(client,
-                  "ERR 005 LINE_TOO_LONG " NODE_ID "\n");
-            continue;
+            reply(c, "ERR 005 LINE_TOO_LONG " NODE_ID "\n"); continue;
         }
-
-        if (!process_command(client, line))
-            break;
+        if (!process_command(c, line)) break;
     }
-
-    pthread_mutex_lock(&clients_lock);
-
-    remove_client_from_rooms(client);
-
-    if (client->registered) {
-        notify_others(client, "LEAVE");
-        printf("[LEFT] %s\n", client->username);
+    pthread_mutex_lock(&lock);
+    cleanup_rooms(c);
+    if (c->registered) {
+        notify_presence(c, "LEAVE");
+        printf("[LEFT] %s\n", c->username);
     }
-
-    Client **current = &clients;
-
-    while (*current != NULL) {
-        if (*current == client) {
-            *current = client->next;
-            break;
-        }
-
-        current = &(*current)->next;
-    }
-
-    connected_count--;
-
-    printf("[DISCONNECTED] Active clients: %d\n",
-           connected_count);
+    Client **p = &clients;
+    while (*p && *p != c) p = &(*p)->next;
+    if (*p) *p = c->next;
+    --client_count;
+    printf("[DISCONNECTED] Active clients: %d\n", client_count);
     fflush(stdout);
-
-    pthread_mutex_unlock(&clients_lock);
-
-    close(client->fd);
-    free(client);
-
+    pthread_mutex_unlock(&lock);
+    close(c->fd);
+    free(c);
     return NULL;
 }
-
-int main(void)
-{
-    int server_fd;
-    int opt = 1;
-    struct sockaddr_in server_addr;
-
+int main(void) {
     signal(SIGPIPE, SIG_IGN);
-
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-
-    if (server_fd < 0) {
-        perror("Socket creation failed");
-        return EXIT_FAILURE;
+    int fd = socket(AF_INET, SOCK_STREAM, 0), opt = 1;
+    if (fd < 0) { perror("socket"); return EXIT_FAILURE; }
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof opt) != 0) {
+        perror("setsockopt"); close(fd); return EXIT_FAILURE;
     }
-
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR,
-                   &opt, sizeof(opt)) < 0) {
-        perror("setsockopt failed");
-        close(server_fd);
-        return EXIT_FAILURE;
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(PORT);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (bind(fd, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(fd, 10) != 0) {
+        perror("bind/listen"); close(fd); return EXIT_FAILURE;
     }
-
-    memset(&server_addr, 0, sizeof(server_addr));
-
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(PORT);
-
-    if (bind(server_fd, (struct sockaddr *)&server_addr,
-             sizeof(server_addr)) < 0) {
-        perror("Bind failed");
-        close(server_fd);
-        return EXIT_FAILURE;
-    }
-
-    if (listen(server_fd, BACKLOG) < 0) {
-        perror("Listen failed");
-        close(server_fd);
-        return EXIT_FAILURE;
-    }
-
-    printf("====================================\n");
-    printf("        NetMessenger Server\n");
-    printf("====================================\n");
-    printf("Listening on TCP port: %d\n", PORT);
-    printf("Node ID: %s\n", NODE_ID);
-    printf("Concurrency Model: POSIX Threads\n");
-    printf("Commands: REGISTER LIST BCAST PMSG\n");
-    printf("          JOIN LEAVE ROOMS RMSG QUIT\n");
-    printf("Waiting for connections...\n");
-    printf("====================================\n");
+    printf("====================================\n"
+           "        NetMessenger Server\n"
+           "====================================\n"
+           "Listening on TCP port: %d\nNode ID: %s\n"
+           "Concurrency Model: POSIX Threads\n"
+           "Commands: REGISTER LIST BCAST PMSG\n"
+           "          JOIN LEAVE ROOMS RMSG SENDFILE QUIT\n"
+           "Maximum file size: 10 MiB\nWaiting for connections...\n"
+           "====================================\n", PORT, NODE_ID);
     fflush(stdout);
-
-    while (1) {
-        struct sockaddr_in address;
-        socklen_t address_len = sizeof(address);
-
-        int fd = accept(server_fd,
-                        (struct sockaddr *)&address,
-                        &address_len);
-
-        if (fd < 0) {
-            if (errno != EINTR)
-                perror("Accept failed");
-            continue;
+    for (;;) {
+        int peer = accept(fd, NULL, NULL);
+        if (peer < 0) { if (errno != EINTR) perror("accept"); continue; }
+        Client *c = calloc(1, sizeof *c);
+        if (!c) { close(peer); continue; }
+        c->fd = peer;
+        pthread_mutex_lock(&lock);
+        if (client_count >= MAX_CLIENTS) {
+            const char *msg = "ERR 005 SERVER_FULL " NODE_ID "\n";
+            (void)send_all(peer, msg, strlen(msg));
+            pthread_mutex_unlock(&lock);
+            close(peer); free(c); continue;
         }
-
-        Client *client = calloc(1, sizeof(Client));
-
-        if (client == NULL) {
-            perror("Memory allocation failed");
-            close(fd);
-            continue;
-        }
-
-        client->fd = fd;
-
-        pthread_mutex_lock(&clients_lock);
-
-        if (connected_count >= MAX_CLIENTS) {
-            const char *error =
-                "ERR 005 SERVER_FULL " NODE_ID "\n";
-
-            send_all(fd, error, strlen(error));
-
-            pthread_mutex_unlock(&clients_lock);
-            close(fd);
-            free(client);
-            continue;
-        }
-
-        client->next = clients;
-        clients = client;
-        connected_count++;
-
-        printf("[CONNECTED] Active clients: %d\n",
-               connected_count);
-        fflush(stdout);
-
-        pthread_mutex_unlock(&clients_lock);
-
-        pthread_t thread_id;
-
-        int result = pthread_create(&thread_id, NULL,
-                                    handle_client, client);
-
-        if (result != 0) {
-            fprintf(stderr,
-                    "Thread creation failed: %s\n",
-                    strerror(result));
-
-            pthread_mutex_lock(&clients_lock);
-
+        c->next = clients; clients = c;
+        ++client_count;
+        printf("[CONNECTED] Active clients: %d\n", client_count); fflush(stdout);
+        pthread_mutex_unlock(&lock);
+        pthread_t thread;
+        int rc = pthread_create(&thread, NULL, handle_client, c);
+        if (rc) {
+            fprintf(stderr, "pthread_create: %s\n", strerror(rc));
+            pthread_mutex_lock(&lock);
             Client **p = &clients;
-
-            while (*p != NULL) {
-                if (*p == client) {
-                    *p = client->next;
-                    break;
-                }
-
-                p = &(*p)->next;
-            }
-
-            connected_count--;
-            pthread_mutex_unlock(&clients_lock);
-
-            close(fd);
-            free(client);
-            continue;
+            while (*p && *p != c) p = &(*p)->next;
+            if (*p) *p = c->next;
+            --client_count;
+            pthread_mutex_unlock(&lock);
+            close(peer); free(c); continue;
         }
-
-        result = pthread_detach(thread_id);
-
-        if (result != 0) {
-            fprintf(stderr,
-                    "Thread detach failed: %s\n",
-                    strerror(result));
-        }
+        rc = pthread_detach(thread);
+        if (rc) fprintf(stderr, "pthread_detach: %s\n", strerror(rc));
     }
-
-    close(server_fd);
-    return EXIT_SUCCESS;
 }

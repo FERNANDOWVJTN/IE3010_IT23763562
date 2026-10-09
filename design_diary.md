@@ -95,3 +95,15 @@ I implemented the JOIN, LEAVE, ROOMS, and RMSG commands in my NetMessenger TCP s
 **Testing Result:** I tested the implementation using three clients: amal, nimal, and kasun. I confirmed room creation, membership validation, room message delivery, and correct error responses for non-members and unknown rooms. I also tested abrupt client disconnections using Ctrl+C. The server removed disconnected users from their rooms, and empty rooms were deleted automatically. All clients were eventually disconnected, and the active connection count returned to zero.
 
 **Learning Outcome:** I learned how to manage room memberships using linked data structures, how to restrict messages to specific groups, and why shared room information requires thread synchronization.
+
+
+### Entry 08 — 09 October 2026
+**Activity:** Binary File Transfer Implementation
+
+I implemented the SENDFILE command in the NetMessenger server to receive binary files over TCP and save them in the personalised storage directory.
+
+**Design Decision:** The server reads the file header first and then receives the exact number of raw bytes specified by the sender. I used a maximum file size of 10 MiB and included filename validation and incomplete-transfer cleanup.
+
+**Testing Result:** I transferred a 30-byte binary test file containing newline, null, and non-ASCII bytes. The stored file had the same size and SHA-256 hash as the original, and the cmp command confirmed that both files were identical. Oversized file requests and unsafe filenames were rejected. An interrupted transfer did not leave an incomplete file at the expected storage path. All clients disconnected, and the active connection count returned to zero.
+
+**Learning Outcome:** I learned the difference between text-based commands and raw binary data in a TCP stream, how to verify file integrity, and why file-size validation and cleanup are important.

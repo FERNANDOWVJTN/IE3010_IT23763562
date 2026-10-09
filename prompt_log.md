@@ -129,3 +129,20 @@
 **Learning Outcome:** I learned how linked lists can represent multiple chat rooms and their members, how room membership controls message delivery, and how mutex synchronization helps manage shared information across client threads.
 
 **Current Limitation:** Binary file transfer, persistent server-side logging, a complete interactive client application, and final documentation are still pending.
+
+
+## Interaction 10 — Binary File Transfer Implementation
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested a complete updated C server implementation and step-by-step guidance to add the SENDFILE command while preserving existing NetMessenger functionalities.
+
+**AI Assistance:** ChatGPT provided a complete updated server source file with binary file reception, personalised storage paths, a 10 MiB file size limit, filename validation, and interrupted-transfer cleanup. It also explained how to test raw binary data using Ncat and verify file integrity using SHA-256 and cmp.
+
+**How I Used the Output:** I backed up my previous server source, copied the updated C file into my project, and compiled it using GCC with POSIX threads. I created a 30-byte binary test file and used Ncat to send the SENDFILE header followed by the exact raw bytes.
+
+**Testing Result:** The server returned OK FILE_RECEIVED test_binary.bin NID:7635. The received file was stored under storage/IT23763562/amal/. SHA-256 hashes and cmp confirmed that the original and stored files were identical. An oversized file request returned ERR 004 FILE_TOO_LARGE, and an unsafe filename request returned ERR 005 INVALID_FILE_HEADER. I also tested a partial transfer by declaring 100 bytes but sending only five. The sender disconnected, and no incomplete file remained at the expected storage path.
+
+**Learning Outcome:** I learned how TCP transports raw binary bytes, why file boundaries must be determined from the protocol header, and how file integrity and transfer errors can be tested.
+
+**Current Limitation:** The file is stored on the server but is not automatically downloaded by the recipient. The complete interactive client, personalised Makefile, persistent logging, and final documentation are still pending.
