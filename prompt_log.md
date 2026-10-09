@@ -180,3 +180,20 @@
 **Learning Outcome:** I learned how Makefile rules, dependencies, and compiler flags automate C project builds and simplify running multiple programs.
 
 **Current Limitation:** Persistent server logging, final integration testing, the final design diary, implementation report, reflection, and submission package are still pending.
+
+
+## Interaction 13 — Persistent Timestamped Server Logging
+
+**Date:** 09 October 2026
+
+**Prompt Summary:** Requested assistance adding persistent timestamped logging to the existing NetMessenger TCP server while preserving previously implemented networking, messaging, room, and binary file transfer features.
+
+**AI Assistance:** ChatGPT reviewed my existing server_3562.c source code and provided a complete updated version with logging support. The implementation records server events in the personalised file netmsg_IT23763562.log, includes timestamps, and protects log writes across concurrent client threads.
+
+**How I Used the Output:** I backed up my original server source, copied the updated code into server_3562.c, and compiled it successfully using Makefile_3562.
+
+**Testing Result:** I verified timestamped log entries for server startup, connections, registration, user listing, broadcasts, private messages, room joins, room messages, file uploads, errors, and disconnections. Two clients communicated successfully, and a 30-byte binary upload completed. Matching SHA-256 hashes and the cmp command confirmed file integrity. I also verified that port 9562 was released after stopping the server.
+
+**Learning Outcome:** I learned how to record server activity persistently, use timestamps for debugging, and protect shared logging operations in a multithreaded network application.
+
+**Current Limitation:** Final integration testing, submission documentation, reflection, and ZIP packaging are still pending.
