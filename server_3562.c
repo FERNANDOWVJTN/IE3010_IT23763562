@@ -350,6 +350,66 @@ static int make_directory(const char *path) {
     }
     return -1;
 }
+/* Forward a saved file as a header followed by exactly size raw bytes.
+ * The global client lock is held over each complete header+payload so that
+ * other threads cannot mix chat messages into a binary transfer. */
+static int send_stored_file_locked(Client *recipient, const char *sender_name,
+                                   const char *filename, FILE *input,
+                                   uint64_t size) {
+    char header[512];
+    int hlen = snprintf(header, sizeof header, "FILE %s %s %" PRIu64 "\n",
+                        sender_name, filename, size);
+    if (hlen < 0 || (size_t)hlen >= sizeof header) return -1;
+    if (send_all(recipient->fd, header, (size_t)hlen) != 0) {
+        shutdown(recipient->fd, SHUT_RDWR);
+        return -1;
+    }
+    unsigned char data[8192];
+    uint64_t remaining = size;
+    while (remaining) {
+        size_t need = remaining < sizeof data ? (size_t)remaining : sizeof data;
+        size_t n = fread(data, 1, need, input);
+        if (n != need || send_all(recipient->fd, data, n) != 0) {
+            /* Never continue text messages on a partly transmitted FILE. */
+            shutdown(recipient->fd, SHUT_RDWR);
+            return -1;
+        }
+        remaining -= n;
+    }
+    return 0;
+}
+
+static int forward_stored_file(Client *sender, const char *target,
+                               const char *filename, const char *path,
+                               uint64_t size) {
+    FILE *input = fopen(path, "rb");
+    if (!input) {
+        log_event("ERROR", "Cannot reopen file for delivery: %s", path);
+        return 0;
+    }
+    int delivered = 0;
+    pthread_mutex_lock(&lock);
+    Client *user = find_user(target);
+    if (user && user != sender) {
+        if (send_stored_file_locked(user, sender->username, filename,
+                                    input, size) == 0) delivered++;
+    } else if (!user) {
+        Room *room = find_room(target);
+        if (room && member_of(room, sender)) {
+            for (Member *m = room->members; m; m = m->next) {
+                Client *to = m->client;
+                if (to == sender || !to->registered) continue;
+                if (fseek(input, 0, SEEK_SET) != 0) break;
+                if (send_stored_file_locked(to, sender->username, filename,
+                                            input, size) == 0) delivered++;
+            }
+        }
+    }
+    pthread_mutex_unlock(&lock);
+    fclose(input);
+    return delivered;
+}
+
 /* Return 0 for file command handled; -1 to disconnect after failure. */
 static int receive_file(Client *sender, const char *args) {
     char target[MAX_NAME + 1], filename[201], size_text[32], extra;
@@ -435,11 +495,19 @@ static int receive_file(Client *sender, const char *args) {
         reply(sender, "ERR 005 FILE_TRANSFER_FAILED " NODE_ID "\n");
         return -1;
     }
+    /* Deliver to the named user or all other members of the target room. */
+    int delivered = forward_stored_file(sender, target, filename, path, size);
     char response[256];
-    snprintf(response, sizeof response, "OK FILE_RECEIVED %s " NODE_ID "\n", filename);
-    reply(sender, response);
-    log_event("FILE", "%s -> %s: %s (%" PRIu64 " bytes)",
-              sender->username, target, path, size);
+    if (delivered > 0) {
+        snprintf(response, sizeof response, "OK FILE_RECEIVED %s " NODE_ID "\n", filename);
+        reply(sender, response);
+        log_event("FILE", "%s -> %s: %s (%" PRIu64 " bytes, %d delivery/ies)",
+                  sender->username, target, path, size, delivered);
+    } else {
+        reply(sender, "ERR 005 FILE_DELIVERY_FAILED " NODE_ID "\n");
+        log_event("ERROR", "File stored but delivery failed: %s -> %s: %s",
+                  sender->username, target, path);
+    }
     return 0;
 }
 /* 1 = continue receiving commands; 0 = close connection. */
