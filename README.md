@@ -115,8 +115,7 @@ storage/IT23763562/<sender_username>/<filename>
 
 File integrity was tested using SHA-256 hashes and the `cmp` utility.
 
-**Known limitation:** Uploads are saved on the server. Automatic delivery or downloading of complete file contents by the target client has not been implemented or verified.
-
+**File Delivery:** NetMessenger supports binary file uploads to the server and forwarding to the intended recipient client. Received files are saved in the client's `received_files/` directory. Direct file delivery from `amal` to `nimal` was successfully verified using a 30-byte binary test file. Matching SHA-256 hashes and a successful byte-by-byte `cmp` comparison confirmed the integrity of the delivered file. Chat-room file delivery and additional edge cases require further verification.
 ## Server Logging
 
 The server records timestamped connection, registration, messaging, room activity, file transfer, error, and disconnection events in:
